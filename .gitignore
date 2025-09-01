@@ -21,4 +21,9 @@
 go.work
 wal.txt
 .air.toml
+
+.qodo
+data
+
+.DS_Store
 ```

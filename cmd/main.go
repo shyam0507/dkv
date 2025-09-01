@@ -2,56 +2,87 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"net/http"
 	"os"
+	"time"
 
+	"github.com/hashicorp/raft"
 	"github.com/shyam0507/dkv/internal"
 )
 
-var memTable internal.IMemTable
-var wal internal.IWal
+var ra *raft.Raft
+var fsm *internal.FSM
 
-func init() {
-	fmt.Println("Initializing the key value store server...")
-	memTable = internal.NewMemTable()
-	wal = internal.NewWal("wal.txt")
+type config struct {
+	id       string
+	httpPort string
+	raftPort string
+}
 
-	// Check if the wal has any data
-	// If yes, load it into the memtable
-	// If no, do nothing
-	fmt.Println("Loading the wal into the memtable...")
-	data, err := wal.Get()
-	if err != nil {
-		fmt.Println(err)
+func getConfig() config {
+	cfg := config{}
+	for i, arg := range os.Args[1:] {
+		if arg == "--node-id" {
+			cfg.id = os.Args[i+2]
+			continue
+		}
+
+		if arg == "--http-port" {
+			cfg.httpPort = os.Args[i+2]
+			continue
+		}
+
+		if arg == "--raft-port" {
+			cfg.raftPort = os.Args[i+2]
+			continue
+		}
 	}
-	err = memTable.Rebuild(*data)
-	if err != nil {
-		fmt.Println(err)
+
+	if cfg.id == "" {
+		log.Fatal("Missing required parameter: --node-id")
 	}
 
-	fmt.Println("Initialization Complete...")
+	if cfg.raftPort == "" {
+		log.Fatal("Missing required parameter: --raft-port")
+	}
 
+	if cfg.httpPort == "" {
+		log.Fatal("Missing required parameter: --http-port")
+	}
+
+	return cfg
 }
 
 func main() {
 	fmt.Println("Starting the key value store server...")
 
-	fmt.Println(os.Args[0])
-	fmt.Println(os.Args[1])
+	config := getConfig()
 
-	if os.Args[1] == "put" {
-		putKey(os.Args[2], os.Args[3])
-		getKey(os.Args[2])
-	} else if os.Args[1] == "get" {
-		getKey(os.Args[2])
-	}
+	ra, fsm = internal.NewNode(config.id, config.raftPort)
 
-}
+	http.HandleFunc("/set", func(w http.ResponseWriter, r *http.Request) {
 
-func putKey(key string, value string) {
-	wal.Put(key, value)
-	memTable.Add(key, value)
-}
+		key := r.URL.Query().Get("key")
+		value := r.URL.Query().Get("value")
 
-func getKey(key string) {
-	fmt.Println(memTable.Get(key))
+		ra.ApplyLog(raft.Log{Type: raft.LogCommand, Data: []byte(key + " " + value)}, time.Second*5)
+
+		fmt.Fprintf(w, "Key %s set to %s", key, value)
+	})
+
+	http.HandleFunc("/get", func(w http.ResponseWriter, r *http.Request) {
+
+		key := r.URL.Query().Get("key")
+
+		value, _ := fsm.Get(key)
+
+		fmt.Fprintf(w, "Key %s set to %s", key, value)
+		w.Write([]byte(value))
+	})
+
+	http.ListenAndServe(":"+config.httpPort, nil)
+
+	fmt.Println("http server started at 8080")
+
 }
